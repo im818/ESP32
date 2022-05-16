@@ -2,39 +2,37 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <WebSocketsServer.h> // Include Websocket Library
-#include <SPIFFS.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Ticker.h>
+#include "InitProtocols.h"
+//#include "GyroLogic.h"
 
 // Replace with your network credentials
 const char *ssid = "ESP32";
 const char *password = "12345678";
 
+Ticker timer;
+
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
 
+float gyroX, gyroY, gyroZ;
+float accX, accY, accZ;
+sensors_event_t a, g, temp;
+
 // Create a sensor object
 Adafruit_MPU6050 mpu;
 
-Ticker timer;
-sensors_event_t a, g, temp;
+bool readDataFlag = false;
+void readData()
+{
+  readDataFlag = true;
+}
 
-StaticJsonDocument<200> doc_tx;
-
-float gyroX, gyroY, gyroZ;
-float accX, accY, accZ;
-float temperature;
-
-// Gyroscope sensor deviation
-float gyroXerror = 0.07;
-float gyroYerror = 0.03;
-float gyroZerror = 0.01;
-
-// Init MPU6050
 void initMPU()
 {
   if (!mpu.begin())
@@ -48,10 +46,108 @@ void initMPU()
   Serial.println("MPU6050 Found!");
 }
 
-bool readDataFlag = false;
-void readData()
+void serverOn()
 {
-  readDataFlag = true;
+
+  server.on("/acceleration", HTTP_GET, [](AsyncWebServerRequest *request)
+            { AsyncResponseStream *response = request->beginResponseStream("application/json");
+
+      DynamicJsonDocument accel_data(1024);
+      
+      mpu.getEvent(&a, &g, &temp);
+
+      // Get current acceleration values
+      accX = a.acceleration.x;
+      accY = a.acceleration.y;
+      accZ = a.acceleration.z;
+
+      accel_data["accX"] = String(accX);
+      accel_data["accY"] = String(accY);
+      accel_data["accZ"] = String(accZ);
+
+      serializeJson(accel_data, *response);
+      request->send(response); });
+
+  server.on("/gyro", HTTP_GET, [](AsyncWebServerRequest *request)
+            { AsyncResponseStream *response = request->beginResponseStream("application/json");
+
+      DynamicJsonDocument gyro_data(1024);
+
+      mpu.getEvent(&a, &g, &temp);
+
+      float gyroX_temp = g.gyro.x;
+      float gyroY_temp = g.gyro.y;
+      float gyroZ_temp = g.gyro.z;
+
+      gyro_data["gyroX"] = String(gyroX);
+      gyro_data["gyroY"] = String(gyroY);
+      gyro_data["gyroZ"] = String(gyroZ);
+
+      serializeJson(gyro_data, *response);
+      request->send(response); });
+
+  //  Start server
+  server.begin();
+}
+
+String updateSocket()
+{
+  mpu.getEvent(&a, &g, &temp);
+  StaticJsonDocument<200> doc_tx;
+
+  // Get current acceleration values
+  accX = a.acceleration.x;
+  accY = a.acceleration.y;
+  accZ = a.acceleration.z;
+
+  float gyroX_temp = g.gyro.x;
+  float gyroY_temp = g.gyro.y;
+  float gyroZ_temp = g.gyro.z;
+
+  String jsonString = "";                      // create a JSON string for sending data to the client
+  JsonObject object = doc_tx.to<JsonObject>(); // create a JSON Object
+
+  object["accX"] = String(accX);
+  object["accY"] = String(accY);
+  object["accZ"] = String(accZ);
+  object["gyroX"] = String(gyroX);
+  object["gyroY"] = String(gyroY);
+  object["gyroZ"] = String(gyroZ);
+
+  serializeJson(doc_tx, jsonString); // convert JSON object to string
+  Serial.println(jsonString);        // print JSON string to console for debug purposes (you can comment this out)
+  return jsonString;
+}
+
+DynamicJsonDocument getAccelData()
+{
+  DynamicJsonDocument readings(16384);
+
+  // Get current acceleration values
+  accX = a.acceleration.x;
+  accY = a.acceleration.y;
+  accZ = a.acceleration.z;
+  readings["accX"] = String(accX);
+  readings["accY"] = String(accY);
+  readings["accZ"] = String(accZ);
+
+  return readings;
+}
+
+DynamicJsonDocument getGyroData()
+{
+
+  DynamicJsonDocument readings(16384);
+
+  float gyroX_temp = g.gyro.x;
+  float gyroY_temp = g.gyro.y;
+  float gyroZ_temp = g.gyro.z;
+
+  readings["gyroX"] = String(gyroX);
+  readings["gyroY"] = String(gyroY);
+  readings["gyroZ"] = String(gyroZ);
+
+  return readings;
 }
 
 void setup()
@@ -59,7 +155,9 @@ void setup()
   // begin serial com for debugging
   Serial.begin(115200);
 
+  // set up MPU
   initMPU();
+
   // set up soft AP
   WiFi.softAP(ssid, password);
 
@@ -68,102 +166,19 @@ void setup()
   Serial.print("IP Address: ");
   Serial.println(WiFi.softAPIP());
 
-  server.on("/acceleration", HTTP_GET, [](AsyncWebServerRequest *request)
-            { AsyncResponseStream *response = request->beginResponseStream("application/json");
-      DynamicJsonDocument readings(1024);
-      mpu.getEvent(&a, &g, &temp);
-
-      // Get current acceleration values
-      accX = a.acceleration.x;
-      accY = a.acceleration.y;
-      accZ = a.acceleration.z;
-      readings["accX"] = String(accX);
-      readings["accY"] = String(accY);
-      readings["accZ"] = String(accZ);
-
-      serializeJson(readings, *response);
-      request->send(response); });
-
-  server.on("/gyro", HTTP_GET, [](AsyncWebServerRequest *request)
-            { AsyncResponseStream *response = request->beginResponseStream("application/json");
-      DynamicJsonDocument readings(1024);
-      mpu.getEvent(&a, &g, &temp);
-
-      float gyroX_temp = g.gyro.x;
-      if (abs(gyroX_temp) > gyroXerror)
-      {
-        gyroX += gyroX_temp / 50.00;
-      }
-
-      float gyroY_temp = g.gyro.y;
-      if (abs(gyroY_temp) > gyroYerror)
-      {
-        gyroY += gyroY_temp / 70.00;
-      }
-
-      float gyroZ_temp = g.gyro.z;
-      if (abs(gyroZ_temp) > gyroZerror)
-      {
-        gyroZ += gyroZ_temp / 90.00;
-      }
-
-      readings["gyroX"] = String(gyroX);
-      readings["gyroY"] = String(gyroY);
-      readings["gyroZ"] = String(gyroZ);
-
-      serializeJson(readings, *response);
-      request->send(response); });
-
-  // Start server
-  server.begin();
-  webSocket.begin();
+  serverOn();
   timer.attach(1, readData);
 }
 
 void loop()
 {
+  webSocket.begin();
   webSocket.loop();
   if (readDataFlag)
   {
-    mpu.getEvent(&a, &g, &temp);
-
-    // Get current acceleration values
-    accX = a.acceleration.x;
-    accY = a.acceleration.y;
-    accZ = a.acceleration.z;
-
-    float gyroX_temp = g.gyro.x;
-    if (abs(gyroX_temp) > gyroXerror)
-    {
-      gyroX += gyroX_temp / 50.00;
-    }
-
-    float gyroY_temp = g.gyro.y;
-    if (abs(gyroY_temp) > gyroYerror)
-    {
-      gyroY += gyroY_temp / 70.00;
-    }
-
-    float gyroZ_temp = g.gyro.z;
-    if (abs(gyroZ_temp) > gyroZerror)
-    {
-      gyroZ += gyroZ_temp / 90.00;
-    }
-
-    String jsonString = "";                      // create a JSON string for sending data to the client
-    JsonObject object = doc_tx.to<JsonObject>(); // create a JSON Object
-
-    object["accX"] = String(accX);
-    object["accY"] = String(accY);
-    object["accZ"] = String(accZ);
-    object["gyroX"] = String(gyroX);
-    object["gyroY"] = String(gyroY);
-    object["gyroZ"] = String(gyroZ);
-
-    serializeJson(doc_tx, jsonString); // convert JSON object to string
-    Serial.println(jsonString);        // print JSON string to console for debug purposes (you can comment this out)
+    String jsonString = updateSocket();
     webSocket.broadcastTXT(jsonString);
-
+    Serial.println(jsonString);
     readDataFlag = false;
   }
 }
