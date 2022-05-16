@@ -28,6 +28,7 @@ sensors_event_t a, g, temp;
 Adafruit_MPU6050 mpu;
 
 bool readDataFlag = false;
+bool stopWebSocket = false;
 void readData()
 {
   readDataFlag = true;
@@ -49,7 +50,7 @@ void initMPU()
 void serverOn()
 {
 
-  server.on("/acceleration", HTTP_GET, [](AsyncWebServerRequest *request)
+  server.on("/live-acceleration", HTTP_GET, [](AsyncWebServerRequest *request)
             { AsyncResponseStream *response = request->beginResponseStream("application/json");
 
       DynamicJsonDocument accel_data(1024);
@@ -68,9 +69,10 @@ void serverOn()
       serializeJson(accel_data, *response);
       request->send(response); });
 
-  server.on("/gyro", HTTP_GET, [](AsyncWebServerRequest *request)
+  server.on("/live-gyro", HTTP_GET, [](AsyncWebServerRequest *request)
             { AsyncResponseStream *response = request->beginResponseStream("application/json");
-
+      
+      Serial.println("Processing stroke recording request ...");
       DynamicJsonDocument gyro_data(1024);
 
       mpu.getEvent(&a, &g, &temp);
@@ -84,6 +86,36 @@ void serverOn()
       gyro_data["gyroZ"] = String(gyroZ);
 
       serializeJson(gyro_data, *response);
+      request->send(response); });
+
+  server.on("/record-stroke", HTTP_GET, [](AsyncWebServerRequest *request)
+            {AsyncResponseStream *response = request->beginResponseStream("application/json");
+      
+      stopWebSocket = true;
+      DynamicJsonDocument strokeData(1024);
+      
+      // create nested array within JSON object
+      JsonArray accelerationX = strokeData.createNestedArray("acceleration_x");
+      JsonArray accelerationY = strokeData.createNestedArray("acceleration_y");
+      JsonArray accelerationZ = strokeData.createNestedArray("acceleration_z");
+
+      // hard code how many readings to be taken for one shot
+      int n = 20;
+
+      for (int i = 0; i < n; i++)
+      {
+
+        mpu.getEvent(&a, &g, &temp);
+
+        accelerationX.add(String(a.acceleration.x));
+        accelerationY.add(String(a.acceleration.y));
+        accelerationZ.add(String(a.acceleration.z));
+
+        delay(100);
+        Serial.println(i);
+      };
+
+      serializeJson(strokeData, *response);
       request->send(response); });
 
   //  Start server
@@ -117,6 +149,33 @@ String updateSocket()
   serializeJson(doc_tx, jsonString); // convert JSON object to string
   Serial.println(jsonString);        // print JSON string to console for debug purposes (you can comment this out)
   return jsonString;
+}
+
+DynamicJsonDocument recordStroke()
+{
+
+  // declare JSON object
+  DynamicJsonDocument strokeData(1024);
+
+  // create nested array within JSON object
+  JsonArray accelerationX = strokeData.createNestedArray("acceleration_x");
+  JsonArray accelerationY = strokeData.createNestedArray("acceleration_y");
+  JsonArray accelerationZ = strokeData.createNestedArray("acceleration_z");
+
+  // hard code how many readings to be taken for one shot
+  int n = 20;
+
+  for (int i = 0; i < n; i++)
+  {
+
+    mpu.getEvent(&a, &g, &temp);
+
+    accelerationX.add(a.acceleration.x);
+    accelerationY.add(a.acceleration.y);
+    accelerationZ.add(a.acceleration.z);
+  }
+
+  return strokeData;
 }
 
 DynamicJsonDocument getAccelData()
@@ -172,13 +231,15 @@ void setup()
 
 void loop()
 {
-  webSocket.begin();
-  webSocket.loop();
-  if (readDataFlag)
+  while (!stopWebSocket)
   {
-    String jsonString = updateSocket();
-    webSocket.broadcastTXT(jsonString);
-    Serial.println(jsonString);
-    readDataFlag = false;
+    webSocket.begin();
+    webSocket.loop();
+    if (readDataFlag)
+    {
+      String jsonString = updateSocket();
+      webSocket.broadcastTXT(jsonString);
+      readDataFlag = false;
+    }
   }
 }
